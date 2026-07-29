@@ -1,0 +1,17 @@
+# secrets
+credentials/*.json
+!credentials/.gitkeep
+
+# logs
+*.log
+logs/
+proxy-debug.log
+proxy-stderr.log
+proxy-stdout.log
+
+# local / OS
+.DS_Store
+Thumbs.db
+*.tmp
+.env
+.env.*

@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Keel Proxy 管理</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #171d25;
+      --panel2: #1c2430;
+      --border: #2a3441;
+      --text: #e7ecf3;
+      --muted: #8b9bb0;
+      --accent: #5b9fd4;
+      --ok: #3ecf8e;
+      --warn: #e6b84d;
+      --bad: #e85d5d;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font-family: var(--sans); line-height: 1.45;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 22px; border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #151b23, #10151b);
+      position: sticky; top: 0; z-index: 10;
+    }
+    header h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .2px; }
+    header .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px 22px 40px; }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 18px; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+    }
+    .card .label { color: var(--muted); font-size: 12px; }
+    .card .value { font-size: 22px; font-weight: 650; margin-top: 6px; font-variant-numeric: tabular-nums; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .col { flex: 1 1 320px; }
+    h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      border-radius: 999px; padding: 2px 10px; font-size: 12px; border: 1px solid var(--border);
+    }
+    .pill.ok { color: var(--ok); border-color: rgba(62,207,142,.35); background: rgba(62,207,142,.08); }
+    .pill.warn { color: var(--warn); border-color: rgba(230,184,77,.35); background: rgba(230,184,77,.08); }
+    .pill.bad { color: var(--bad); border-color: rgba(232,93,93,.35); background: rgba(232,93,93,.08); }
+    .pill.muted { color: var(--muted); }
+    button, .btn {
+      appearance: none; border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+      border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+    }
+    button:hover { border-color: #3d4b5c; background: #222b38; }
+    button.primary { background: #2a5f8f; border-color: #3b7eb5; }
+    button.primary:hover { background: #3472ab; }
+    button.danger { color: #ffb4b4; border-color: rgba(232,93,93,.4); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    input, textarea {
+      width: 100%; background: #0c1015; color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 11px; font-size: 13px; font-family: var(--mono);
+    }
+    textarea { min-height: 120px; resize: vertical; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+    .field { margin-bottom: 12px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .mono { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+    .toast {
+      position: fixed; right: 16px; bottom: 16px; background: #1b2430; border: 1px solid var(--border);
+      padding: 10px 14px; border-radius: 10px; font-size: 13px; display: none; max-width: 360px; z-index: 50;
+    }
+    .toast.show { display: block; }
+    .toast.err { border-color: rgba(232,93,93,.5); }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+    pre.log {
+      background: #0c1015; border: 1px solid var(--border); border-radius: 8px;
+      padding: 10px; max-height: 220px; overflow: auto; font-size: 11px; color: #b7c4d6;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .models { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      font-family: var(--mono); font-size: 11px; padding: 4px 8px; border-radius: 6px;
+      background: #121821; border: 1px solid var(--border); color: #c5d0de;
+    }
+    @media (max-width: 860px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Keel Proxy</h1>
+      <div class="sub">本机账号池 · 轮换 · 模型 · 仅 127.0.0.1</div>
+    </div>
+    <div class="actions">
+      <button id="btnRefresh">刷新</button>
+      <button id="btnReload" class="primary">热加载凭证</button>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <div class="grid">
+      <div class="card"><div class="label">账号总数</div><div class="value" id="sTotal">—</div></div>
+      <div class="card"><div class="label">可用</div><div class="value" id="sAvail">—</div></div>
+      <div class="card"><div class="label">上游</div><div class="value" style="font-size:14px;word-break:break-all" id="sUp">—</div></div>
+      <div class="card"><div class="label">监听</div><div class="value" style="font-size:14px" id="sListen">—</div></div>
+    </div>
+
+    <div class="row">
+      <div class="col card">
+        <h2>账号池</h2>
+        <div style="overflow-x:auto">
+          <table>
+            <thead>
+              <tr>
+                <th>名称</th>
+                <th>状态</th>
+                <th>额度</th>
+                <th>过期</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="accountBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="col card" style="max-width:420px">
+        <h2>添加 / 更新账号</h2>
+        <div class="field">
+          <label>账号名（文件名）</label>
+          <input id="fLabel" placeholder="work / account2" />
+        </div>
+        <div class="field">
+          <label>accessToken</label>
+          <input id="fToken" placeholder="粘贴 token" />
+        </div>
+        <div class="field">
+          <label>expiresAt（可选 ISO）</label>
+          <input id="fExp" placeholder="2026-08-05T12:00:00.000Z" />
+        </div>
+        <div class="field">
+          <label>或直接粘贴完整 JSON</label>
+          <textarea id="fJson" placeholder='{"accessToken":"...","expiresAt":"..."}'></textarea>
+        </div>
+        <div class="actions">
+          <button id="btnSave" class="primary">保存到 credentials/</button>
+          <button id="btnImportHome">导入 ~/.keelcode</button>
+        </div>
+        <p class="mono" style="margin-top:12px">也可用 CLI：python add-account.py &lt;名&gt;</p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>模型目录</h2>
+      <div class="models" id="modelList"><span class="mono">加载中…</span></div>
+    </div>
+
+    <div class="card" style="margin-top:12px">
+      <h2>调试</h2>
+      <div class="actions" style="margin-bottom:8px">
+        <button id="btnLogs">拉最近日志</button>
+      </div>
+      <pre class="log" id="logBox">（空）</pre>
+      <details>
+        <summary>客户端接入（通用）</summary>
+        <pre class="log" id="helpBox"></pre>
+      </details>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    function toast(msg, err = false) {
+      const el = $("toast");
+      el.textContent = msg;
+      el.className = "toast show" + (err ? " err" : "");
+      clearTimeout(window.__t);
+      window.__t = setTimeout(() => el.classList.remove("show"), 2800);
+    }
+    async function api(path, opts) {
+      const r = await fetch(path, {
+        headers: { "content-type": "application/json", ...(opts?.headers || {}) },
+        ...opts,
+      });
+      const text = await r.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { raw: text }; }
+      if (!r.ok) throw new Error(data.error || data.detail || text || r.statusText);
+      return data;
+    }
+    function statusPill(a) {
+      if (a.disabled) return '<span class="pill muted">disabled</span>';
+      if (a.expired) return '<span class="pill bad">expired</span>';
+      if (a.bad) return '<span class="pill bad">bad 401</span>';
+      if (a.cooldownRemainingMs > 0) return `<span class="pill warn">cooldown ${Math.ceil(a.cooldownRemainingMs/1000)}s</span>`;
+      return '<span class="pill ok">ready</span>';
+    }
+    function fmtUsd(v) {
+      if (v == null || v === "") return "?";
+      const n = Number(v);
+      if (!Number.isFinite(n)) return String(v);
+      return "$" + n.toFixed(2);
+    }
+    function usageCell(a) {
+      const u = a.usage;
+      if (!u) return '<span class="mono">—</span>';
+      if (!u.ok) return `<span class="pill bad">usage err</span><div class="mono">${esc(u.error || u.status || "")}</div>`;
+      const pools = (u.pools || []).map(p => {
+        const left = fmtUsd(p.remaining_usd);
+        const lim = fmtUsd(p.limit_usd);
+        return `<div class="mono">${esc(p.label)}: <strong>${left}</strong> / ${lim}</div>`;
+      }).join("");
+      const reset = u.period?.resets_at ? `<div class="mono">reset ${esc(String(u.period.resets_at).replace(".000Z","Z"))}</div>` : "";
+      const plan = u.plan ? `<div class="mono">plan: ${esc(u.plan)}</div>` : "";
+      return `${plan}${pools || '<span class="mono">no pools</span>'}${reset}`;
+    }
+    function renderAccounts(list) {
+      const tb = $("accountBody");
+      if (!list.length) {
+        tb.innerHTML = '<tr><td colspan="5" class="mono">暂无账号。添加 credentials/*.json 或右侧表单写入。</td></tr>';
+        return;
+      }
+      tb.innerHTML = list.map(a => `
+        <tr>
+          <td><strong>${esc(a.label)}</strong><div class="mono">${esc(a.user || "")}</div><div class="mono">${esc(a.tokenPreview || "")}</div></td>
+          <td>${statusPill(a)}</td>
+          <td>${usageCell(a)}</td>
+          <td class="mono">${esc(a.expiresAt || "—")}</td>
+          <td class="actions">
+            <button data-act="toggle" data-label="${esc(a.label)}" data-disabled="${a.disabled ? "0" : "1"}">${a.disabled ? "启用" : "禁用"}</button>
+            <button data-act="reset" data-label="${esc(a.label)}">重置状态</button>
+            <button class="danger" data-act="del" data-label="${esc(a.label)}" ${a.readonly ? "disabled title=\"系统 fallback 不可删\"" : ""}>删除</button>
+          </td>
+        </tr>
+      `).join("");
+    }
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    async function refresh() {
+      const st = await api("/api/status");
+      $("sTotal").textContent = st.total;
+      $("sAvail").textContent = st.available;
+      $("sUp").textContent = st.upstream;
+      $("sListen").textContent = st.listen;
+      renderAccounts(st.accounts || []);
+      $("helpBox").textContent =
+`Base URL:  http://127.0.0.1:${st.port || 8082}
+API Key:   any non-empty string (real tokens live in the local account pool)
+API:       Anthropic Messages (/v1/messages)
+
+Example (Claude Code env):
+  ANTHROPIC_BASE_URL=http://127.0.0.1:${st.port || 8082}
+  ANTHROPIC_API_KEY=keelcode
+
+Put credential JSON files under ./credentials/ (not committed to git).`;
+      try {
+        const models = await api("/api/models");
+        const ids = (models.data || models.models || []).map(m => m.id || m);
+        $("modelList").innerHTML = ids.length
+          ? ids.map(id => `<span class="chip">${esc(id)}</span>`).join("")
+          : '<span class="mono">无模型（可能无可用账号）</span>';
+      } catch (e) {
+        $("modelList").innerHTML = `<span class="mono">模型拉取失败: ${esc(e.message)}</span>`;
+      }
+    }
+    $("btnRefresh").onclick = () => refresh().catch(e => toast(e.message, true));
+    $("btnReload").onclick = async () => {
+      try {
+        const r = await api("/api/pool/reload", { method: "POST" });
+        toast(`已 reload：${r.available}/${r.total} 可用`);
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    $("btnSave").onclick = async () => {
+      try {
+        let body = {};
+        const raw = $("fJson").value.trim();
+        if (raw) {
+          const j = JSON.parse(raw);
+          body = { label: $("fLabel").value.trim() || undefined, ...j };
+        } else {
+          body = {
+            label: $("fLabel").value.trim(),
+            accessToken: $("fToken").value.trim(),
+            expiresAt: $("fExp").value.trim() || undefined,
+          };
+        }
+        if (!body.label) throw new Error("需要账号名");
+        if (!body.accessToken) throw new Error("需要 accessToken 或完整 JSON");
+        await api("/api/accounts", { method: "POST", body: JSON.stringify(body) });
+        toast("已保存 " + body.label);
+        $("fToken").value = ""; $("fJson").value = "";
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    $("btnImportHome").onclick = async () => {
+      try {
+        const label = $("fLabel").value.trim() || "default";
+        const r = await api("/api/accounts/import-home", {
+          method: "POST",
+          body: JSON.stringify({ label }),
+        });
+        toast(`已导入为 ${r.label}`);
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    $("accountBody").onclick = async (ev) => {
+      const btn = ev.target.closest("button[data-act]");
+      if (!btn) return;
+      const label = btn.getAttribute("data-label");
+      const act = btn.getAttribute("data-act");
+      try {
+        if (act === "del") {
+          if (!confirm(`删除账号 ${label}？`)) return;
+          await api("/api/accounts/" + encodeURIComponent(label), { method: "DELETE" });
+          toast("已删除 " + label);
+        } else if (act === "reset") {
+          await api("/api/accounts/" + encodeURIComponent(label) + "/reset", { method: "POST" });
+          toast("已重置 " + label);
+        } else if (act === "toggle") {
+          const disabled = btn.getAttribute("data-disabled") === "1";
+          await api("/api/accounts/" + encodeURIComponent(label), {
+            method: "PATCH",
+            body: JSON.stringify({ disabled }),
+          });
+          toast((disabled ? "已禁用 " : "已启用 ") + label);
+        }
+        await refresh();
+      } catch (e) { toast(e.message, true); }
+    };
+    $("btnLogs").onclick = async () => {
+      try {
+        const r = await api("/api/logs?lines=80");
+        $("logBox").textContent = r.text || "（空）";
+      } catch (e) { toast(e.message, true); }
+    };
+    refresh().catch(e => toast(e.message, true));
+    setInterval(() => refresh().catch(() => {}), 15000);
+  </script>
+</body>
+</html>

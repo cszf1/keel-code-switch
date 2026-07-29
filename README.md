@@ -1,138 +1,158 @@
 # keelcode-proxy
 
-本地代理，让 Claude Code 等标准 Anthropic 客户端直接走 keelcode 托管 API，支持多账号轮换。
+本地 Anthropic 兼容代理：让 Claude Code / 其它标准 Anthropic 客户端走 [keelcode](https://api.keelcode.ai) 托管 API，支持多账号轮换与网页管理。
 
 ## 为什么需要
 
-keelcode 的 API (`api.keelcode.ai`) 兼容 Anthropic Messages 协议，但有几处差异导致 Claude Code 无法直连：
+keelcode API 兼容 Anthropic Messages，但和 Claude Code 直连仍有差异：
 
-- 认证方式：keelcode 要 `Authorization: Bearer`，Claude Code 发 `x-api-key`
-- content 格式：keelcode 要数组 `[{type:"text",text:"..."}]`，Claude Code 发字符串
-- 模型名：keelcode 用自定义名（`kimi-k3`、`deepseek-v4-pro`），Claude Code 发标准 Anthropic 名
+- 认证：keelcode 要 `Authorization: Bearer`，客户端常发 `x-api-key`
+- content：keelcode 要 `[{type:"text",text}]`，客户端可能发字符串
+- 模型名：keelcode 自定义名（`kimi-k3`、`deepseek-v4-pro` 等）
 - stream：keelcode 只支持 `stream:true`
-- max_tokens：各模型有不同上限，Claude Code 默认发 32000
-- 部分字段：`cache_control`、`metadata`、`context_management`、`output_config`、`anthropic-beta` header 等被 keelcode 拒绝
-- tool description 长度限制 ~16000 字符（Claude Code 的 Workflow tool 有 19285 字符）
+- max_tokens：各模型上限不同
+- 部分字段会被拒绝：`cache_control`、`thinking.type=adaptive`、tool 的 `$schema` / `defer_loading` 等
+- tool description 过长会被拒
 
-代理自动处理这些差异，让 Claude Code 无缝接入 keelcode。
+本代理自动做协议适配与字段清洗。
 
 ## 依赖
 
 - [Bun](https://bun.sh) 1.0+
-- keelcode CLI（已登录至少一个账号）
+- 可选：[keelcode CLI](https://www.npmjs.com/package/@keelcode-ai/keelcode)（`keelcode login` 拿凭证）
 
 ## 快速开始
 
-### 1. 启动代理
-
 ```bash
-cd E:\otherproject\keelcode
+# 安装 Bun 后
 bun run proxy.ts
+# 或指定端口
+bun run proxy.ts --port 8082
 ```
 
-默认监听 `http://localhost:8082`，自动加载 `~/.keelcode/credentials.json`。
+Windows 后台启动：
 
-### 2. 配置 Claude Code
+```powershell
+.\start-hidden.ps1
+```
+
+默认监听：`http://127.0.0.1:8082`（仅本机）
+
+### 网页管理
+
+浏览器打开：<http://127.0.0.1:8082/>
+
+- 账号池状态 / 启用禁用 / 删除 / 重置
+- 粘贴 token 或完整 JSON 添加账号
+- 导入 `~/.keelcode/credentials.json`
+- 热加载、模型列表、额度、调试日志
+
+### 配置客户端（示例）
+
+任意 Anthropic Messages 兼容客户端：
+
+```text
+Base URL:  http://127.0.0.1:8082
+API Key:   任意非空字符串（真实 token 在账号池）
+```
+
+Claude Code 环境变量示例：
 
 ```cmd
-set ANTHROPIC_BASE_URL=http://localhost:8082
+set ANTHROPIC_BASE_URL=http://127.0.0.1:8082
 set ANTHROPIC_API_KEY=keelcode
-claude --model kimi-k3
 ```
 
-`--model` 可用值：`kimi-k3`、`deepseek-v4-pro`、`deepseek-v4-flash`、`glm-5.2`、`claude-sonnet-4-6`、`claude-opus-4-8`、`claude-sonnet-5`、`claude-fable-5`、`haiku-4` 等。也支持标准 Anthropic 模型名，代理自动映射。
+常用模型：`kimi-k3`、`deepseek-v4-pro`、`deepseek-v4-flash`、`glm-5.2` 等。也支持部分标准 Anthropic 名，代理会映射。
 
-## 多账号轮换
+> Free 额度下 Open models 通常更稳；Claude / GPT 可能出现 `provider_unavailable`。
 
-把多个 keelcode 账号的凭证文件放到 `credentials/` 目录，代理自动 round-robin 轮换：
+## 多账号
 
-```
+把多个凭证放到 `credentials/`：
+
+```text
 credentials/
   account1.json
   account2.json
-  work.json
 ```
 
-每个文件格式与 keelcode 原生的 `credentials.json` 一致：
+格式与 keelcode 原生 `~/.keelcode/credentials.json` 一致：
 
 ```json
 {
-  "accessToken": "ey...",
+  "accessToken": "…",
   "expiresAt": "2026-08-01T12:00:00.000Z"
 }
 ```
 
 轮换策略：
 
-- 每次请求 round-robin 切换账号
-- 401（认证失败）→ 标记坏号，自动跳过，换下一个
-- 429（限流）→ 冷却 60 秒，换下一个
-- token 过期 → 自动跳过
-- `~/.keelcode/credentials.json` 始终作为 fallback（去重）
+- 请求级 round-robin
+- 401 → 标坏并跳过
+- 429 → 冷却 60s 后换号
+- 过期 / disabled → 跳过
+- `~/.keelcode/credentials.json` 可作为 fallback（token 去重）
 
-### 添加新账号
+添加账号：
 
 ```bash
 python add-account.py work
 ```
 
-脚本会执行 `keelcode login`（浏览器 OAuth），完成后自动复制凭证到 `credentials/work.json` 并热刷新代理，无需重启。
+或在网页 UI 里粘贴 / 导入。
 
-### 管理端点
+## 管理 API
 
 ```bash
-# 查看凭证池状态
-curl http://localhost:8082/pool/status
-
-# 热刷新（加了新凭证文件后执行）
-curl http://localhost:8082/pool/reload
+curl http://127.0.0.1:8082/api/status
+curl -X POST http://127.0.0.1:8082/api/pool/reload
+curl http://127.0.0.1:8082/api/models
 ```
 
-## 代理做了什么
-
-每个请求经过以下转换：
-
-| 项目 | Claude Code 发的 | 代理转换后 |
-|---|---|---|
-| 认证 | `x-api-key: xxx` | `Authorization: Bearer <token>` |
-| content | 字符串 `"hi"` | 数组 `[{type:"text",text:"hi"}]` |
-| 模型名 | `claude-sonnet-4-20250514` | `claude-sonnet-4-6` |
-| stream | `false` 或 `true` | 强制 `true` |
-| max_tokens | `32000` | 按模型限制（kimi-k3→12000） |
-| role:"system" 消息 | 在 messages 数组里 | 合并到顶层 system 字段 |
-| tool description | 可能超 16000 字符 | 截断到 16000 |
-| tool property 缺 type | `{"description":"..."}` | 补 `type:"string"` |
-
-同时递归剥离这些字段：
-`cache_control`、`metadata`、`service_tier`、`mcp_servers`、`context_management`、`output_config`、`anthropic-beta` header、非 Claude 模型的 `thinking`。
+兼容旧路径：`/pool/status`、`/pool/reload`。
 
 ## 启动参数
 
-```
+```text
 bun run proxy.ts [--port 8082] [--creds-dir <path>]
 ```
 
-- `--port`：监听端口，默认 8082
-- `--creds-dir`：凭证目录，默认 `E:\otherproject\keelcode\credentials`
+- `--port` 默认 `8082`
+- `--creds-dir` 默认 `./credentials`
 
-## 文件说明
+## 目录结构
 
+```text
+.
+├── proxy.ts           # 代理 + 管理 API
+├── public/index.html  # 管理 UI
+├── add-account.py     # CLI 加号
+├── start.ps1          # 前台启动
+├── start-hidden.ps1   # 后台启动
+└── credentials/       # 本地凭证（勿提交）
 ```
-keelcode/
-├── proxy.ts              代理主程序
-├── add-account.py        多账号快速登录脚本
-├── credentials/          凭证目录（每个 .json 一个账号）
-├── proxy-debug.log       请求/错误日志（调试用）
-└── proxy-stderr.log      代理运行日志
-```
+
+## 安全
+
+- 默认只绑定 `127.0.0.1`
+- **不要**把 `credentials/*.json`、日志提交到 Git
+- Token / 邮箱等敏感信息不会出现在公开 README；UI 对邮箱做匿名显示
 
 ## 调试
 
-代理运行日志输出到 stderr（终端或 `proxy-stderr.log`），请求/响应详情写入 `proxy-debug.log`。遇到问题时先看这两个文件。
+- 运行日志：stderr 或 `logs/`
+- 请求详情：`proxy-debug.log`（本地，已 gitignore）
 
 常见问题：
 
-- **400 invalid_request**：检查 `proxy-debug.log` 里的 REQUEST 部分，看是否有未处理的字段
-- **503 provider_unavailable**：模型暂时不可用，重试或换模型
-- **401**：token 过期，用 `python add-account.py` 重新登录
-- **代理不启动 EADDRINUSE**：端口被占，`netstat -aon | grep 8082` 找 PID 后 `taskkill //F //PID <pid>`
+| 现象 | 处理 |
+|------|------|
+| 400 `invalid_request` | 看 debug 日志；代理会清洗 adaptive thinking / `$schema` 等 |
+| 503 `provider_unavailable` | 换 Open 模型或稍后重试 |
+| 401 | token 过期，重新 `keelcode login` 并导入 |
+| EADDRINUSE | 端口被占，结束占用进程或换 `--port` |
+
+## License
+
+以原仓库为准。本仓库为协议适配与本地管理增强。
