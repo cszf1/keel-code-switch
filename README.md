@@ -42,10 +42,11 @@ Windows 后台启动：
 
 浏览器打开：<http://127.0.0.1:8082/>
 
-- 账号池状态 / 启用禁用 / 删除 / 重置
+- **网页 OAuth 登录**（device code，**无需安装 keelcode CLI**）
+- 账号池状态 / 启用禁用 / 删除 / 重置 / 日额度
 - 粘贴 token 或完整 JSON 添加账号
-- 导入 `~/.keelcode/credentials.json`
-- 热加载、模型列表、额度、调试日志
+- 导入 `~/.keelcode/credentials.json`（若本机曾用过 CLI）
+- 热加载、模型列表、调试日志
 
 ### 配置客户端（示例）
 

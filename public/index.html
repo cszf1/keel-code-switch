@@ -132,29 +132,45 @@
         </div>
       </div>
 
-      <div class="col card" style="max-width:420px">
-        <h2>添加 / 更新账号</h2>
+      <div class="col card" style="max-width:440px">
+        <h2>网页 OAuth 登录</h2>
+        <p class="mono" style="margin-top:0">无需安装 keelcode CLI。浏览器授权后自动写入账号池。</p>
         <div class="field">
-          <label>账号名（文件名）</label>
+          <label>账号名（可选，默认自动生成）</label>
           <input id="fLabel" placeholder="work / account2" />
         </div>
-        <div class="field">
-          <label>accessToken</label>
-          <input id="fToken" placeholder="粘贴 token" />
-        </div>
-        <div class="field">
-          <label>expiresAt（可选 ISO）</label>
-          <input id="fExp" placeholder="2026-08-05T12:00:00.000Z" />
-        </div>
-        <div class="field">
-          <label>或直接粘贴完整 JSON</label>
-          <textarea id="fJson" placeholder='{"accessToken":"...","expiresAt":"..."}'></textarea>
-        </div>
         <div class="actions">
-          <button id="btnSave" class="primary">保存到 credentials/</button>
+          <button id="btnOauth" class="primary">开始网页登录</button>
           <button id="btnImportHome">导入 ~/.keelcode</button>
         </div>
-        <p class="mono" style="margin-top:12px">也可用 CLI：python add-account.py &lt;名&gt;</p>
+        <div id="oauthBox" style="display:none;margin-top:14px;padding:12px;border:1px solid var(--border);border-radius:10px;background:#0c1015">
+          <div class="mono">用户码</div>
+          <div id="oauthCode" style="font-size:28px;font-weight:700;letter-spacing:2px;margin:6px 0 10px;font-family:var(--mono)"></div>
+          <div class="actions">
+            <a id="oauthLink" href="#" target="_blank" rel="noopener" class="btn primary" style="text-decoration:none;display:inline-block">打开授权页</a>
+            <button id="btnOauthCancel">取消</button>
+          </div>
+          <div id="oauthStatus" class="mono" style="margin-top:10px">等待授权…</div>
+        </div>
+
+        <details style="margin-top:16px">
+          <summary>高级：手动粘贴 token</summary>
+          <div class="field" style="margin-top:10px">
+            <label>accessToken</label>
+            <input id="fToken" placeholder="粘贴 token" />
+          </div>
+          <div class="field">
+            <label>expiresAt（可选 ISO）</label>
+            <input id="fExp" placeholder="2026-08-05T12:00:00.000Z" />
+          </div>
+          <div class="field">
+            <label>或完整 JSON</label>
+            <textarea id="fJson" placeholder='{"accessToken":"...","expiresAt":"..."}'></textarea>
+          </div>
+          <div class="actions">
+            <button id="btnSave">保存到 credentials/</button>
+          </div>
+        </details>
       </div>
     </div>
 
@@ -314,6 +330,71 @@ Put credential JSON files under ./credentials/ (not committed to git).`;
         toast(`已导入为 ${r.label}`);
         await refresh();
       } catch (e) { toast(e.message, true); }
+    };
+
+    let oauthTimer = null;
+    let oauthDevice = null;
+    function stopOauth() {
+      if (oauthTimer) { clearTimeout(oauthTimer); oauthTimer = null; }
+      oauthDevice = null;
+      $("oauthBox").style.display = "none";
+      $("btnOauth").disabled = false;
+    }
+    async function pollOauth(intervalSec) {
+      if (!oauthDevice) return;
+      try {
+        const r = await api("/api/auth/poll", {
+          method: "POST",
+          body: JSON.stringify({ device_code: oauthDevice }),
+        });
+        if (r.status === "pending") {
+          $("oauthStatus").textContent = r.slow_down
+            ? `授权中（服务端要求减速，${r.interval || intervalSec}s 后再询）…`
+            : "授权中，完成浏览器确认后自动加入账号池…";
+          oauthTimer = setTimeout(() => pollOauth(r.interval || intervalSec || 5), (r.interval || intervalSec || 5) * 1000);
+          return;
+        }
+        if (r.status === "success") {
+          $("oauthStatus").textContent = `成功：已保存账号 ${r.label}` + (r.user ? `（${r.user}）` : "");
+          toast("登录成功：" + r.label);
+          $("btnOauth").disabled = false;
+          oauthDevice = null;
+          await refresh();
+          return;
+        }
+        $("oauthStatus").textContent = `失败：${r.error || r.status}`;
+        toast(r.error || r.status, true);
+        $("btnOauth").disabled = false;
+        oauthDevice = null;
+      } catch (e) {
+        $("oauthStatus").textContent = "轮询错误：" + e.message;
+        oauthTimer = setTimeout(() => pollOauth(intervalSec || 5), (intervalSec || 5) * 1000);
+      }
+    }
+    $("btnOauth").onclick = async () => {
+      try {
+        stopOauth();
+        $("btnOauth").disabled = true;
+        const started = await api("/api/auth/start", {
+          method: "POST",
+          body: JSON.stringify({ label: $("fLabel").value.trim() || undefined }),
+        });
+        oauthDevice = started.device_code;
+        $("oauthBox").style.display = "block";
+        $("oauthCode").textContent = started.user_code;
+        $("oauthLink").href = started.verification_uri_complete || started.verification_uri;
+        $("oauthStatus").textContent = `等待授权…（约 ${started.expires_in}s 内有效，账号名 ${started.label}）`;
+        // 尝试自动打开浏览器
+        try { window.open(started.verification_uri_complete || started.verification_uri, "_blank", "noopener"); } catch {}
+        pollOauth(started.interval || 5);
+      } catch (e) {
+        $("btnOauth").disabled = false;
+        toast(e.message, true);
+      }
+    };
+    $("btnOauthCancel").onclick = () => {
+      stopOauth();
+      toast("已取消登录");
     };
     $("accountBody").onclick = async (ev) => {
       const btn = ev.target.closest("button[data-act]");

@@ -550,6 +550,165 @@ function json(data: any, status = 200) {
   return Response.json(data, { status });
 }
 
+// ── Device OAuth（无需安装 keelcode CLI，网页登录拿凭证）──
+const OAUTH_CLIENT_ID = "keelcode-cli";
+const OAUTH_SCOPE = "inference models usage";
+const OAUTH_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+
+type DeviceSession = {
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string;
+  interval: number;
+  expires_at: number;
+  label: string;
+  status: "pending" | "success" | "error" | "expired" | "denied";
+  error?: string;
+  account?: string;
+};
+
+const deviceSessions = new Map<string, DeviceSession>();
+
+async function oauthFetch(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers || {});
+  if (!headers.has("user-agent")) headers.set("user-agent", UPSTREAM_UA);
+  if (!headers.has("accept")) headers.set("accept", "application/json");
+  return fetch(`${UPSTREAM}${path}`, { ...init, headers, redirect: "error" });
+}
+
+async function startDeviceLogin(labelRaw?: string) {
+  const label = safeLabel(labelRaw || `acc${Date.now().toString(36).slice(-4)}`);
+  const r = await oauthFetch("/api/auth/device/code", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_id: OAUTH_CLIENT_ID, scope: OAUTH_SCOPE }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(data?.detail || data?.error || data?.title || `device code failed (${r.status})`);
+  }
+  if (!data.device_code || !data.user_code) {
+    throw new Error("device code response incomplete");
+  }
+  const sess: DeviceSession = {
+    device_code: data.device_code,
+    user_code: data.user_code,
+    verification_uri: data.verification_uri,
+    verification_uri_complete: data.verification_uri_complete || data.verification_uri,
+    interval: Math.max(1, Number(data.interval) || 5),
+    expires_at: Date.now() + (Number(data.expires_in) || 900) * 1000,
+    label,
+    status: "pending",
+  };
+  deviceSessions.set(data.device_code, sess);
+  return {
+    device_code: sess.device_code,
+    user_code: sess.user_code,
+    verification_uri: sess.verification_uri,
+    verification_uri_complete: sess.verification_uri_complete,
+    interval: sess.interval,
+    expires_in: Math.max(0, Math.floor((sess.expires_at - Date.now()) / 1000)),
+    label: sess.label,
+  };
+}
+
+async function pollDeviceLogin(device_code: string) {
+  const sess = deviceSessions.get(device_code);
+  if (!sess) throw new Error("unknown device_code — 请重新开始登录");
+  if (sess.status === "success" || sess.status === "error" || sess.status === "denied") {
+    return {
+      status: sess.status,
+      label: sess.label,
+      account: sess.account,
+      error: sess.error,
+    };
+  }
+  if (Date.now() > sess.expires_at) {
+    sess.status = "expired";
+    sess.error = "device code expired";
+    return { status: "expired", error: sess.error, label: sess.label };
+  }
+
+  const r = await oauthFetch("/api/auth/device/token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      grant_type: OAUTH_GRANT,
+      device_code: sess.device_code,
+      client_id: OAUTH_CLIENT_ID,
+    }),
+  });
+  const data = await r.json().catch(() => ({}));
+
+  if (r.ok && data.access_token) {
+    // 拉用户信息
+    let user: any = null;
+    try {
+      const me = await oauthFetch("/api/v1/me", {
+        headers: { authorization: `Bearer ${data.access_token}` },
+      });
+      if (me.ok) user = await me.json();
+    } catch {}
+
+    const expiresAt = data.expires_in
+      ? new Date(Date.now() + Number(data.expires_in) * 1000).toISOString()
+      : "";
+    const cred: any = {
+      schemaVersion: 1,
+      apiBaseUrl: UPSTREAM,
+      accessToken: data.access_token,
+      authStyle: "bearer",
+      expiresAt,
+      user: user
+        ? {
+            id: user.id,
+            name: user.name || user.email?.split("@")[0],
+            email: user.email,
+          }
+        : undefined,
+    };
+    const saved = pool.upsert(sess.label, cred);
+    sess.status = "success";
+    sess.account = saved;
+    return {
+      status: "success",
+      label: saved,
+      account: saved,
+      user: displayUser(cred.user),
+      expiresAt,
+    };
+  }
+
+  const err = data.error || "";
+  if (err === "authorization_pending") {
+    return { status: "pending", label: sess.label, interval: sess.interval };
+  }
+  if (err === "slow_down") {
+    sess.interval = Math.min(60, sess.interval + 5);
+    return { status: "pending", label: sess.label, interval: sess.interval, slow_down: true };
+  }
+  if (err === "access_denied") {
+    sess.status = "denied";
+    sess.error = "user denied";
+    return { status: "denied", error: sess.error, label: sess.label };
+  }
+  if (err === "expired_token") {
+    sess.status = "expired";
+    sess.error = "expired";
+    return { status: "expired", error: sess.error, label: sess.label };
+  }
+
+  // 非预期
+  const msg = data.error_description || data.detail || err || `token poll failed (${r.status})`;
+  if (r.status >= 400 && err) {
+    sess.status = "error";
+    sess.error = msg;
+    return { status: "error", error: msg, label: sess.label };
+  }
+  return { status: "pending", label: sess.label, interval: sess.interval };
+}
+
 function readLogTail(lines = 80): string {
   if (!existsSync(DEBUG_LOG)) return "";
   const text = readFileSync(DEBUG_LOG, "utf-8");
@@ -609,6 +768,30 @@ async function handleApi(req: Request, path: string, url: URL): Promise<Response
       const body = await req.json().catch(() => ({}));
       const label = pool.importHome(body.label);
       return json({ ok: true, label, accounts: pool.list() });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 400);
+    }
+  }
+
+  // 网页 OAuth 登录（device code，无需 keelcode CLI）
+  if (path === "/api/auth/start" && req.method === "POST") {
+    try {
+      const body = await req.json().catch(() => ({}));
+      const started = await startDeviceLogin(body.label);
+      return json({ ok: true, ...started });
+    } catch (e: any) {
+      return json({ error: e.message || String(e) }, 400);
+    }
+  }
+  if (path === "/api/auth/poll" && req.method === "POST") {
+    try {
+      const body = await req.json();
+      if (!body.device_code) throw new Error("missing device_code");
+      const result = await pollDeviceLogin(body.device_code);
+      return json({
+        ...result,
+        accounts: result.status === "success" ? pool.list() : undefined,
+      });
     } catch (e: any) {
       return json({ error: e.message || String(e) }, 400);
     }
